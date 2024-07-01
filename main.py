@@ -1,6 +1,5 @@
 from openai import OpenAI
 from openai.types.beta.assistant import Assistant
-from openai.types.beta.thread import Thread
 from openai.types.beta.threads.run import Run
 
 client = OpenAI()
@@ -54,11 +53,14 @@ def get_assistant_response(thread_id: str) -> str:
 
 if __name__ == "__main__":
     assistant = create_assistant(
-        name="Math Tutor",
-        instructions="You are a personal math tutor. Write and run code to answer math questions.",
+        name="Senior Software Engineer",
+        instructions="You are a personal senior software engineer. Explain code snippets and concepts to a non-technical audience. Ignore unrelated questions.",
     )
     thread_id = create_thread()
-    create_message("What is x for the equation 8x + 2 = 10?", thread_id)
+    message = """
+    I want to eat steak, where should I go?
+    """
     run = run_thread(assistant.id, thread_id)
+    create_message(message, thread_id)
     retrieve_thread(thread_id, run)
     print(get_assistant_response(thread_id))
