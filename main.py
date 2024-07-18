@@ -1,5 +1,5 @@
-from services.discord.bot import run_discord_bot
-
+from services.discordpy.client import DiscordClient, DISCORD_TOKEN
 
 if __name__ == "__main__":
-    run_discord_bot()
+    client = DiscordClient()
+    client.run(DISCORD_TOKEN)
