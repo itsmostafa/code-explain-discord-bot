@@ -1,5 +1,15 @@
 import openai
 
+MESSAGES = [
+    {
+        "role": "system",
+        "content": (
+            "You are an expert in programming. Answer questions related to programming only."
+            "If the question is not related to programming, respond with 'I can only answer questions related to programming. How can I help you?'"
+        ),
+    }
+]
+
 
 def chatgpt_response(prompt) -> str:
     response = openai.chat.completions.create(
@@ -7,7 +17,10 @@ def chatgpt_response(prompt) -> str:
         messages=[
             {
                 "role": "system",
-                "content": "You are a helpful assistant.",
+                "content": (
+                    "You are an expert in programming. Answer questions related to programming only."
+                    "If the question is not related to programming, respond with 'I can only answer questions related to programming. How can I help you?'"
+                ),
             },
             {
                 "role": "user",
