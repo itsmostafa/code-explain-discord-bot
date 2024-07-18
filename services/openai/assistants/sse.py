@@ -1,6 +1,6 @@
 from openai.types.beta.assistant import Assistant
 
-from services.chatgpt.assistant import create_assistant
+from services.openai.assistant import create_assistant
 
 
 def sse_assistant() -> Assistant:
