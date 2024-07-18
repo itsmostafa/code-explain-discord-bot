@@ -29,7 +29,7 @@ def chatgpt_response(prompt) -> str:
         ],
     )
 
-    if not response.choices:
+    if not response.choices or type(response.choices[0].message) is not str:
         return "Sorry, I don't understand."
 
     return response.choices[0].message.content
