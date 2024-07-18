@@ -11,7 +11,7 @@ MESSAGES = [
 ]
 
 
-def chatgpt_response(prompt) -> str:
+def chatgpt_response(prompt: str) -> str:
     response = openai.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -29,7 +29,7 @@ def chatgpt_response(prompt) -> str:
         ],
     )
 
-    if not response.choices or type(response.choices[0].message) is not str:
-        return "Sorry, I don't understand."
+    if not response.choices or type(response.choices[0].message.content) is not str:
+        return "Sorry, I don't understand. If you need help, please use the '/help' command."
 
     return response.choices[0].message.content

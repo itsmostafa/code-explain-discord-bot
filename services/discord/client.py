@@ -2,6 +2,7 @@ import os
 
 import discord
 
+from services.discord import HELP_MESSAGE
 from services.openai.chatgpt import chatgpt_response
 
 
@@ -22,11 +23,21 @@ class DiscordClient(discord.Client):
     async def on_message(self, message: discord.Message):
         """Respond to a message."""
         print(f"Message from {message.author}: {message.content}")
+
         if message.author == self.user:
             return
 
         is_command = False
         user_message = message.content
+
+        if message.content.startswith("/help"):
+            is_command = True
+            await self._send_message(
+                message,
+                response=HELP_MESSAGE,
+            )
+            return
+
         if message.content.startswith("/ai"):
             is_command = True
             user_message = message.content.replace("/ai", "")
@@ -36,7 +47,7 @@ class DiscordClient(discord.Client):
                 response = chatgpt_response(prompt=user_message)
                 await self._send_message(message, response)
 
-    async def _send_message(self, message: discord.Message, response):
+    async def _send_message(self, message: discord.Message, response) -> None:
         """Send a message to the channel."""
         if len(response) > 2000:
             for i in range(0, len(response), 2000):
