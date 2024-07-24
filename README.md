@@ -4,7 +4,7 @@ Explain code
 
 # Build Docker Container
 
-- `docker build -t code-explain .`
+- `docker build -t ghcr.io/itsmostafa/code-explain .`
 
 # Run Docker
 
