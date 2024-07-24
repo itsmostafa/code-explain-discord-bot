@@ -1,0 +1,47 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  IMAGE: ${{ secrets.IMAGE_URL }}
+  PAT: ${{ secrets.PAT }}
+  USER: ${{ secrets.USER }}
+  HOST: ${{ secrets.HOST }}
+  PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Registry login
+        run: echo $PAT | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+
+      - name: Pull Docker Image
+        run: docker pull $IMAGE:latest
+
+      - name: Tag Docker Image
+        run: docker build . --tag $IMAGE:latest --cache-from $IMAGE:latest
+
+      - name: Push Docker Image
+        run: docker push $IMAGE:latest
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh/
+          echo "$PRIVATE_KEY" > ~/.ssh/server.key
+          chmod 600 ~/.ssh/server.key
+          cat >>~/.ssh/config <<END
+          Host server
+            HostName $HOST
+            User $USER
+            IdentityFile ~/.ssh/server.key
+            StrictHostKeyChecking no
+          END
+      - name: Deploy to production
+        run: ssh server "sh" < ./.github/scripts/deploy.sh
