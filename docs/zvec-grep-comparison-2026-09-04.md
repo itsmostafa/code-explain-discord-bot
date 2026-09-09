@@ -49,17 +49,23 @@ configured `batch_size` so the persistence boundary matches the request
 boundary), so a failure late in a run never discards earlier network work and
 a rerun only sends what is still missing. The provider marks 429, 5xx and
 network errors outside a cancelled context with `providers.ErrTransient`; the
-indexer retries only those, three attempts with doubling backoff, and stops
-the run when they are exhausted. A batch the provider rejects permanently is recorded with the files
-it came from and the run continues, so one bad batch cannot block every later
-batch on every rerun; its chunks stay pending, so a rerun retries them. Retry
-lives in the indexer, not the provider, so query-time embedding still falls
-back to BM25 immediately instead of stalling. Cancellation is never treated as
-transient, and a local database write failure stops the run rather than paying
-for provider calls that cannot be stored. Existing fingerprint, validation and
-stale-vector repair behavior is unchanged. `task check` passes, including
-resume-without-resend, transient retry, provider-down stop, cancellation, and
-per-status transient classification including a truncated response body.
+indexer retries only those, at most three attempts with doubling backoff and
+no retry once 30s of wall clock is already spent, so an endpoint that hangs
+until the HTTP client timeout costs one attempt rather than three; the run
+stops when the attempts are exhausted. A batch the provider rejects
+permanently is recorded with the files it came from and the run continues, so
+one bad batch cannot block every later batch on every rerun; its chunks stay
+pending, so a rerun retries them. Three consecutive permanent batch failures
+stop the run instead, since nothing batch-specific fails that consistently — a
+bad key, model or base URL does. Retry lives in the indexer, not the provider,
+so query-time embedding still falls back to BM25 immediately instead of
+stalling. Cancellation is never treated as transient, and a local database
+write failure stops the run rather than paying for provider calls that cannot
+be stored. Existing fingerprint, validation and stale-vector repair behavior
+is unchanged. `task check` passes, including resume-without-resend, transient
+retry, provider-down stop, cancellation, and per-status transient
+classification including a truncated response body, the consecutive-failure
+stop, and the spent retry budget.
 
 ## 3. P1: Add consistent ignore rules and query scope filters (medium)
 

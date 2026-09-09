@@ -470,3 +470,65 @@ func TestEmbedderNamesFailedChunkPaths(t *testing.T) {
 		t.Fatalf("expected the healthy batch to persist, got %d", got)
 	}
 }
+
+// A bad API key or model name fails every batch the same way. Walking all of
+// them costs hundreds of doomed requests and an error nobody can read.
+func TestEmbedderStopsOnRepeatedPermanentFailures(t *testing.T) {
+	database := embedTestCollection(t, "a.md", "b.md", "c.md", "d.md", "e.md")
+	provider := &fakeEmbeddingProvider{model: "m", dimension: 4, fail: func(int) error {
+		return errors.New("embedding API returned 401 Unauthorized")
+	}}
+	emb := NewEmbedder(database, provider, "p", "fp")
+	emb.BatchSize = 1
+	err := emb.EmbedCollection(context.Background(), "test")
+	if err == nil || !strings.Contains(err.Error(), "consecutive failed batches") {
+		t.Fatalf("expected the run to stop and name the cause, got %v", err)
+	}
+	if provider.calls != maxPermanentBatchFailures {
+		t.Fatalf("expected the run to stop after %d doomed batches, got %d calls", maxPermanentBatchFailures, provider.calls)
+	}
+}
+
+// An isolated bad batch is not a configuration failure: later batches must
+// still be attempted, or one bad file blocks the corpus on every rerun.
+func TestEmbedderKeepsGoingPastNonConsecutiveFailures(t *testing.T) {
+	database := embedTestCollection(t, "a.md", "b.md", "c.md", "d.md", "e.md")
+	provider := &fakeEmbeddingProvider{model: "m", dimension: 4, fail: func(call int) error {
+		if call%2 == 1 {
+			return errors.New("embedding API returned 400 Bad Request")
+		}
+		return nil
+	}}
+	emb := NewEmbedder(database, provider, "p", "fp")
+	emb.BatchSize = 1
+	if err := emb.EmbedCollection(context.Background(), "test"); err == nil {
+		t.Fatal("expected the failed batches to be reported")
+	}
+	if provider.calls != 5 {
+		t.Fatalf("alternating failures must not trip the consecutive cap, got %d calls", provider.calls)
+	}
+	if got := countEmbeddings(t, database); got != 2 {
+		t.Fatalf("expected the 2 healthy batches to persist, got %d", got)
+	}
+}
+
+// An endpoint that hangs until the HTTP client's own timeout must cost one
+// attempt, not the whole retry budget three times over.
+func TestEmbedderSkipsRetryOnceBudgetIsSpent(t *testing.T) {
+	shortRetryDelay(t)
+	previous := embedRetryBudget
+	embedRetryBudget = 0 // every attempt has already spent the budget
+	t.Cleanup(func() { embedRetryBudget = previous })
+
+	database := embedTestCollection(t, "a.md")
+	provider := &fakeEmbeddingProvider{model: "m", dimension: 4, fail: func(int) error {
+		return fmt.Errorf("embedding API returned 503: %w", providers.ErrTransient)
+	}}
+	err := NewEmbedder(database, provider, "p", "fp").EmbedCollection(context.Background(), "test")
+	if err == nil || !errors.Is(err, providers.ErrTransient) {
+		t.Fatalf("expected the transient failure to surface, got %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("a spent retry budget must not retry, got %d calls", provider.calls)
+	}
+}

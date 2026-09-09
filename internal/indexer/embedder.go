@@ -15,11 +15,22 @@ import (
 )
 
 // Retry budget for a batch the provider reports as transient. Bounded so a
-// down provider fails the run in seconds, not minutes. A var so tests can
-// shrink the delay.
+// down provider fails the run in seconds, not minutes: at most embedAttempts
+// tries, and no retry at all once embedRetryBudget of wall clock is already
+// spent, so an endpoint that hangs until the HTTP client's own timeout costs
+// one attempt rather than three. Vars so tests can shrink them.
 const embedAttempts = 3
 
-var embedRetryDelay = 500 * time.Millisecond
+var (
+	embedRetryDelay  = 500 * time.Millisecond
+	embedRetryBudget = 30 * time.Second
+)
+
+// maxPermanentBatchFailures stops a run whose every batch is failing the same
+// permanent way — a bad API key, a missing model, a wrong base URL. Counted
+// consecutively, so an isolated bad batch among good ones still only skips
+// itself.
+const maxPermanentBatchFailures = 3
 
 // errPersist marks a failure to write to the local database. Unlike a batch
 // the provider rejects, a refusing database refuses the next batch too, so the
@@ -75,6 +86,7 @@ func (e *Embedder) EmbedCollection(ctx context.Context, collection string) error
 	slog.Info("embedding chunks", "count", len(pending), "collection", collection, "batch_size", batchSize)
 
 	var failures []error
+	consecutive := 0
 	for start := 0; start < len(pending); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
@@ -85,6 +97,7 @@ func (e *Embedder) EmbedCollection(ctx context.Context, collection string) error
 		err := e.embedAndStore(ctx, batch, dimension)
 		switch {
 		case err == nil:
+			consecutive = 0
 		case errors.Is(err, providers.ErrTransient), errors.Is(err, errPersist), ctx.Err() != nil:
 			// The provider or the database is unavailable, rather than
 			// unhappy with this batch. Stop: everything already persisted
@@ -95,6 +108,14 @@ func (e *Embedder) EmbedCollection(ctx context.Context, collection string) error
 			// so one poison batch cannot block every later one, run after run.
 			slog.Warn("embedding batch failed", "chunks", len(batch), "error", err)
 			failures = append(failures, err)
+			consecutive++
+			if consecutive == maxPermanentBatchFailures {
+				// Nothing batch-specific fails this consistently: the
+				// configuration is wrong. Stop instead of paying for every
+				// remaining batch to fail the same way.
+				return fmt.Errorf("stopped after %d consecutive failed batches, the embedding provider or its configuration is likely wrong: %w",
+					consecutive, errors.Join(failures...))
+			}
 		}
 	}
 	return errors.Join(failures...)
@@ -110,9 +131,14 @@ func (e *Embedder) embedAndStore(ctx context.Context, batch []chunkRow, dimensio
 
 	var embeddings [][]float32
 	var err error
+	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		embeddings, err = e.provider.Embed(ctx, texts)
 		if err == nil || attempt == embedAttempts || !errors.Is(err, providers.ErrTransient) {
+			break
+		}
+		if elapsed := time.Since(start); elapsed >= embedRetryBudget {
+			slog.Warn("not retrying embedding batch, retry budget spent", "elapsed", elapsed, "error", err)
 			break
 		}
 		delay := embedRetryDelay << (attempt - 1)
