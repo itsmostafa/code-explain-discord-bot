@@ -2,7 +2,7 @@
 
 Date: 2026-09-04 (America/Los_Angeles).
 
-Reviewed zvec-grep commit `52653951b24617762f4ab0c71c34d594e5001617` and qi working tree based on `0e1830d8fb7b663a3a5b2946616abf6ff4569938`, including existing uncommitted changes. Three Luna subagents investigated retrieval, indexing, and agent UX; the primary agent checked and consolidated findings. This is source inspection, not a measured performance comparison. The original audit performed no implementation or benchmark runs; finding 1's implementation follow-up is recorded below. Existing user changes were preserved.
+Reviewed zvec-grep commit `52653951b24617762f4ab0c71c34d594e5001617` and qi working tree based on `0e1830d8fb7b663a3a5b2946616abf6ff4569938`, including existing uncommitted changes. Three Luna subagents investigated retrieval, indexing, and agent UX; the primary agent checked and consolidated findings. This is source inspection, not a measured performance comparison. The original audit performed no implementation or benchmark runs; the implementation follow-ups for findings 1 and 2 are recorded below. Existing user changes were preserved.
 
 ## Recommendation
 
@@ -42,6 +42,30 @@ proposals.
 **Implement:** move the persistence boundary to bounded batches, preserve valid successes, retry transient errors with bounded backoff, and record failed chunk/path details. Reuse existing fingerprint and vector validation; qi already detects stale/missing/invalid embeddings and should retain that behavior.
 
 **Verify:** fail the second batch, restart, and assert the first batch is not sent again; cover 429/5xx, cancellation, malformed vectors, and fingerprint changes.
+
+**Implementation follow-up:** `EmbedCollection` now embeds and persists one
+bounded batch at a time (`Embedder.BatchSize`, wired from the provider's
+configured `batch_size` so the persistence boundary matches the request
+boundary), so a failure late in a run never discards earlier network work and
+a rerun only sends what is still missing. The provider marks 429, 5xx and
+network errors outside a cancelled context with `providers.ErrTransient`; the
+indexer retries only those, at most three attempts with doubling backoff and
+no retry once 30s of wall clock is already spent, so an endpoint that hangs
+until the HTTP client timeout costs one attempt rather than three; the run
+stops when the attempts are exhausted. A batch the provider rejects
+permanently is recorded with the files it came from and the run continues, so
+one bad batch cannot block every later batch on every rerun; its chunks stay
+pending, so a rerun retries them. Three consecutive permanent batch failures
+stop the run instead, since nothing batch-specific fails that consistently — a
+bad key, model or base URL does. Retry lives in the indexer, not the provider,
+so query-time embedding still falls back to BM25 immediately instead of
+stalling. Cancellation is never treated as transient, and a local database
+write failure stops the run rather than paying for provider calls that cannot
+be stored. Existing fingerprint, validation and stale-vector repair behavior
+is unchanged. `task check` passes, including resume-without-resend, transient
+retry, provider-down stop, cancellation, and per-status transient
+classification including a truncated response body, the consecutive-failure
+stop, and the spent retry budget.
 
 ## 3. P1: Add consistent ignore rules and query scope filters (medium)
 
@@ -122,12 +146,12 @@ Benchmark representative collection sizes. First consider retaining only the bes
 
 ## Suggested implementation sequence
 
-1. Public retrieval handles, exact source ranges, and search→get tests.
-2. Batch embedding persistence/recovery and structured status.
+1. Public retrieval handles, exact source ranges, and search→get tests. Done.
+2. Batch embedding persistence/recovery (done) and structured status.
 3. Shared discovery/query filters and bounded preview output.
 4. Evaluation corpus; use it to decide multi-query/refill/ranking changes.
 5. Broader agent setup; optional watch, code parsers, or ANN only with demonstrated demand.
 
 The original audit proposed these changes without changing code or running
-`task check`. Finding 1 now has an implementation follow-up above; the remaining
-findings are still proposals.
+`task check`. Findings 1 and 2 now have implementation follow-ups above; the
+remaining findings are still proposals.

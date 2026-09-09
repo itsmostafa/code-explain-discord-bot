@@ -62,6 +62,8 @@ func New(ctx context.Context, cfgPath string) (*App, error) {
 			providerTag = "http"
 		}
 		a.Embedder = indexer.NewEmbedder(database, embProvider, providerTag, fingerprint)
+		// Persist on the same boundary the provider requests on.
+		a.Embedder.BatchSize = cfg.Providers.Embedding.BatchSize
 		a.Hybrid = search.NewHybrid(a.BM25, a.Vector, embProvider, cfg.Search)
 	}
 

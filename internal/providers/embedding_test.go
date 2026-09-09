@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,5 +176,77 @@ func TestEmbeddingProviderNonJSONErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(msg, "Bad Gateway") {
 		t.Errorf("error should include a body excerpt, got: %v", err)
+	}
+}
+
+// The indexer retries only what the provider marks transient, so the
+// classification of each status is part of the contract.
+func TestEmbeddingProviderClassifiesTransientStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		status    int
+		transient bool
+	}{
+		{http.StatusTooManyRequests, true},
+		{http.StatusBadGateway, true},
+		{http.StatusServiceUnavailable, true},
+		{http.StatusBadRequest, false},
+		{http.StatusUnauthorized, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"error":{"message":"nope"}}`))
+		}))
+		p := NewEmbedding(&config.EmbeddingProviderConfig{BaseURL: srv.URL, Model: "m", Dimension: 4})
+		_, err := p.Embed(context.Background(), []string{"hello"})
+		srv.Close()
+		if err == nil {
+			t.Fatalf("status %d: expected an error", tc.status)
+		}
+		if got := errors.Is(err, ErrTransient); got != tc.transient {
+			t.Errorf("status %d: transient=%v, want %v (%v)", tc.status, got, tc.transient, err)
+		}
+	}
+}
+
+// A cancelled request is the caller's decision, not a flaky endpoint.
+func TestEmbeddingProviderCancellationIsNotTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := NewEmbedding(&config.EmbeddingProviderConfig{BaseURL: srv.URL, Model: "m", Dimension: 4})
+	_, err := p.Embed(ctx, []string{"hello"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the cancellation to surface, got %v", err)
+	}
+	if errors.Is(err, ErrTransient) {
+		t.Errorf("a cancelled context must not be retryable, got %v", err)
+	}
+}
+
+// A body that stops mid-flight is as retryable as a request that never
+// connected — otherwise the indexer skips the batch instead of retrying it.
+func TestEmbeddingProviderTruncatedBodyIsTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		// Promise more body than we send, then hang up.
+		_, _ = conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 500\r\n\r\npartial"))
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	p := NewEmbedding(&config.EmbeddingProviderConfig{BaseURL: srv.URL, Model: "m", Dimension: 4})
+	_, err := p.Embed(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected an error for a truncated response body")
+	}
+	if !errors.Is(err, ErrTransient) {
+		t.Errorf("a truncated body must be retryable, got %v", err)
 	}
 }
