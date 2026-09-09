@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,25 @@ import (
 // A legitimate response is roughly batch_size × dimension × 10 bytes of JSON;
 // 64 MiB leaves room for large batches while capping a runaway body.
 const maxResponseBytes = 64 << 20
+
+// DefaultBatchSize is the batch size used when the config leaves it unset.
+// The indexer persists on the same boundary, so both must agree.
+const DefaultBatchSize = 32
+
+// ErrTransient marks a failure that is worth retrying: a network error, a
+// 429, or a 5xx. Callers that can retry (the indexer) check for it; callers
+// that fall back instead (query-time embedding) ignore it and stay fast.
+var ErrTransient = errors.New("transient embedding failure")
+
+// netErr classifies a network failure mid-request. A cancelled or timed-out
+// context is the caller's decision, not a flaky endpoint, and is never marked
+// retryable; anything else is.
+func netErr(ctx context.Context, what string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return fmt.Errorf("%s: %w: %w", what, ErrTransient, err)
+}
 
 // excerpt returns a short, single-line slice of a response body for use in
 // error messages. Fields collapses every run of whitespace, including the
@@ -67,7 +87,7 @@ func (p *embeddingProvider) Embed(ctx context.Context, texts []string) ([][]floa
 	}
 	batchSize := p.cfg.BatchSize
 	if batchSize <= 0 {
-		batchSize = 32
+		batchSize = DefaultBatchSize
 	}
 
 	// Truncate any texts that exceed the per-text rune limit.
@@ -124,21 +144,26 @@ func (p *embeddingProvider) embedBatch(ctx context.Context, texts []string) ([][
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("embedding request: %w", err)
+		return nil, netErr(ctx, "embedding request", err)
 	}
 	defer resp.Body.Close()
 
 	// Read through a bounded reader and check status before decoding: an HTML
 	// proxy error used to surface as a JSON parse error, and an unbounded body
 	// could be read entirely into memory.
+	// A body that stops mid-flight (server disconnect, read timeout) is as
+	// retryable as a failed request, including when it truncates a 429/5xx.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading embedding response: %w", err)
+		return nil, netErr(ctx, "reading embedding response", err)
 	}
 	if len(respBody) > maxResponseBytes {
 		return nil, fmt.Errorf("embedding response exceeds %d bytes", maxResponseBytes)
 	}
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode/100 == 5 {
+			return nil, fmt.Errorf("embedding API returned %s: %w: %s", resp.Status, ErrTransient, excerpt(respBody))
+		}
 		return nil, fmt.Errorf("embedding API returned %s: %s", resp.Status, excerpt(respBody))
 	}
 
