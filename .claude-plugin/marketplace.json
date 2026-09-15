@@ -8,7 +8,7 @@
       "name": "qi",
       "source": "./",
       "description": "Local knowledge search CLI — index documents and search them using BM25 full-text search, vector embeddings, and hybrid RRF ranking, all running locally with no external dependencies.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "itsmostafa"
       },
